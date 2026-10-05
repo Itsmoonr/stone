@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Ninjutsu AR</title>
+
+  <script src="config.js"></script>
+  <script src="gestures.js"></script>
+  <script src="tracker.js"></script>
+  <script src="wood.js"></script>
+  <script src="clones.js"></script>
+  <script src="audio.js"></script>
+  <script src="camera.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1.1675465747/selfie_segmentation.js" crossorigin="anonymous"></script>
+
+  <style>
+    html, body { margin:0; width:100%; height:100%; overflow:hidden; background:#000; }
+    body { position:fixed; inset:0; touch-action:manipulation; }
+
+    #v_src, #fx_layer {
+      position:absolute; top:0; left:0;
+      width:100%; height:100%;
+      object-fit:cover; transform: scaleX(-1);
+    }
+    #clones {
+      position:absolute; inset:0;
+      width:100%; height:100%;
+      z-index:1; pointer-events:none;
+    }
+    #fx_layer { z-index:2; pointer-events:none; }
+    #wood {
+      position:fixed; inset:0;
+      width:100%; height:100%;
+      z-index:21; pointer-events:none;
+    }
+
+    .fx {
+      position:absolute;
+      height:auto;
+      top:0; left:0;
+      transform: translate(-50%, -50%);
+      pointer-events:none;
+      display:none;
+      mix-blend-mode:screen;
+      z-index:20;
+    }
+    #n     { width: min(1600px, 125vw); }
+    #s     { width: min(2400px, 187.5vw); }
+    #katon { width: min(2200px, 172vw); }
+
+    #wood-controls, #seal-status { display:none !important; }
+
+    #start-screen {
+      position:fixed; inset:0; z-index:100; display:grid; place-items:center;
+      padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right))
+               max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+      background: #07140feb;
+      color:#edffe9;
+      font: 16px/1.6 system-ui, sans-serif;
+      text-align:center;
+    }
+    #start-screen[hidden] { display:none; }
+    #start-camera {
+      min-height:52px; padding:12px 24px;
+      border:1px solid #a7d283; border-radius:14px;
+      background:#284d33; color:white;
+      font:600 18px system-ui; cursor:pointer;
+    }
+    #start-message { max-width:420px; margin-top:16px; }
+  </style>
+</head>
+<body>
+  <div id="start-screen">
+    <div>
+      <button id="start-camera" type="button">Chạm để bắt đầu</button>
+      <p id="start-message" role="status">Camera trước · Âm thanh 100%</p>
+    </div>
+  </div>
+
+  <video id="v_src" muted autoplay playsinline webkit-playsinline></video>
+  <canvas id="clones"></canvas>
+  <canvas id="fx_layer"></canvas>
+  <canvas id="wood"></canvas>
+
+  <!-- ⭐ katon.mp4 (không phải uchiha.mp4) -->
+  <video id="n"     class="fx" src="assets/naruto.mp4"  muted autoplay loop playsinline></video>
+  <video id="s"     class="fx" src="assets/sasuke.mp4"  muted autoplay loop playsinline></video>
+  <video id="katon" class="fx" src="assets/katon.mp4"   muted autoplay loop playsinline></video>
+
+  <div id="wood-controls">
+    <div id="wood-status" role="status"></div>
+    <button id="wood-demo" type="button">Demo</button>
+  </div>
+  <div id="seal-status" role="status"></div>
+
+  <script>
+    const vElement = document.getElementById('v_src');
+    const fxCanvas = document.getElementById('fx_layer');
+
+    const tracker = new HandTracker({
+      video: vElement,
+      fxCanvas: fxCanvas
+    });
+
+    const woodEffect = new WoodRelease(
+      vElement,
+      document.getElementById('wood'),
+      document.getElementById('wood-status'),
+      document.getElementById('wood-demo')
+    );
+
+    const cloneEffect = new ShadowClones(
+      vElement,
+      document.getElementById('clones'),
+      document.getElementById('seal-status')
+    );
+
+    const jutsuSounds = new JutsuSounds(() => {
+      const t = tracker.getStates();
+      return {
+        naruto: t.naruto,
+        sasuke: t.sasuke,
+        katon:  t.katon,
+        clone:  cloneEffect.active && cloneEffect.ready && performance.now() < cloneEffect.timer.until,
+        wood:   woodEffect.active && performance.now() < woodEffect.timer.until
+      };
+    });
+
+    const h = new Hands({
+      locateFile: (f) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+    });
+
+    h.setOptions({
+      maxNumHands: window.AR_CONFIG.maxNumHands,
+      modelComplexity: matchMedia('(pointer: coarse)').matches ? 0 : 1,
+      minDetectionConfidence: window.AR_CONFIG.minDetectionConfidence,
+      minTrackingConfidence: window.AR_CONFIG.minTrackingConfidence
+    });
+
+    h.onResults((res) => {
+      const hands   = res.multiHandLandmarks || [];
+      const handed  = res.multiHandedness   || [];
+      const aspect  = vElement.videoWidth / vElement.videoHeight || 16 / 9;
+
+      const seals = detectHandSeals(hands, handed, aspect);
+
+      woodEffect.update(seals.wood);
+      cloneEffect.update(seals.clone);
+
+      tracker.tick(res, seals);
+    });
+
+    const cam = new NinjutsuCamera(
+      vElement,
+      [
+        document.getElementById('n'),
+        document.getElementById('s'),
+        document.getElementById('katon')
+      ],
+      async () => {
+        await h.send({ image: vElement });
+        await cloneEffect.frame();
+      },
+      () => jutsuSounds.enable()
+    );
+  </script>
+</body>
+</html>
